@@ -1,10 +1,9 @@
 package org.deeplearning4j.examples.nlp.paragraphvectors;
 
 import org.datavec.api.util.ClassPathResource;
-import org.deeplearning4j.berkeley.Pair;
-import org.deeplearning4j.examples.nlp.paragraphvectors.tools.LabelSeeker;
 import org.deeplearning4j.examples.nlp.paragraphvectors.tools.MeansBuilder;
 import org.deeplearning4j.models.embeddings.inmemory.InMemoryLookupTable;
+import org.deeplearning4j.models.embeddings.loader.WordVectorSerializer;
 import org.deeplearning4j.models.paragraphvectors.ParagraphVectors;
 import org.deeplearning4j.models.word2vec.VocabWord;
 import org.deeplearning4j.text.documentiterator.FileLabelAwareIterator;
@@ -18,18 +17,19 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.io.FileNotFoundException;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
  * This is basic example for documents classification done with DL4j ParagraphVectors.
  * The overall idea is to use ParagraphVectors in the same way we use LDA:
  * topic space modelling.
- *
+ * <p>
  * In this example we assume we have few labeled categories that we can use
  * for training, and few unlabeled documents. And our goal is to determine,
  * which category these unlabeled documents fall into
- *
- *
+ * <p>
+ * <p>
  * Please note: This example could be improved by using learning cascade
  * for higher accuracy, but that's beyond basic example paradigm.
  *
@@ -43,11 +43,13 @@ public class ParagraphVectorsClassifierExample {
 
     private static final Logger log = LoggerFactory.getLogger(ParagraphVectorsClassifierExample.class);
 
+    private static final String PARAGRAPH_VECTORS_TXT = "ParagraphVectors.txt";
+
     public static void main(String[] args) throws Exception {
 
-      ParagraphVectorsClassifierExample app = new ParagraphVectorsClassifierExample();
-      app.makeParagraphVectors();
-      app.checkUnlabeledData();
+        ParagraphVectorsClassifierExample app = new ParagraphVectorsClassifierExample();
+        app.makeParagraphVectors();
+        app.checkUnlabeledData();
         /*
                 Your output should be like this:
 
@@ -65,30 +67,36 @@ public class ParagraphVectorsClassifierExample {
          */
     }
 
-    void makeParagraphVectors()  throws Exception {
-      ClassPathResource resource = new ClassPathResource("paravec/labeled");
+    void makeParagraphVectors() throws Exception {
+        ClassPathResource resource = new ClassPathResource("paravec/labeled");
 
-      // build a iterator for our dataset
-      iterator = new FileLabelAwareIterator.Builder()
-              .addSourceFolder(resource.getFile())
-              .build();
+        // build a iterator for our dataset
+        iterator = new FileLabelAwareIterator.Builder()
+            .addSourceFolder(resource.getFile())
+            .build();
 
-      tokenizerFactory = new DefaultTokenizerFactory();
-      tokenizerFactory.setTokenPreProcessor(new CommonPreprocessor());
+        tokenizerFactory = new DefaultTokenizerFactory();
+        tokenizerFactory.setTokenPreProcessor(new CommonPreprocessor());
 
-      // ParagraphVectors training configuration
-      paragraphVectors = new ParagraphVectors.Builder()
-              .learningRate(0.025)
-              .minLearningRate(0.001)
-              .batchSize(1000)
-              .epochs(20)
-              .iterate(iterator)
-              .trainWordVectors(true)
-              .tokenizerFactory(tokenizerFactory)
-              .build();
+        try {
+            paragraphVectors = WordVectorSerializer.readParagraphVectors(PARAGRAPH_VECTORS_TXT);
+        } catch (Exception e) {
+            // ParagraphVectors training configuration
+            paragraphVectors = new ParagraphVectors.Builder()
+                .learningRate(0.025)
+                .minLearningRate(0.001)
+                .batchSize(1000)
+                .epochs(40)
+                .iterate(iterator)
+                .trainWordVectors(true)
+                .tokenizerFactory(tokenizerFactory)
+                .build();
 
-      // Start model training
-      paragraphVectors.fit();
+            // Start model training
+            paragraphVectors.fit();
+
+            WordVectorSerializer.writeParagraphVectors(paragraphVectors, PARAGRAPH_VECTORS_TXT);
+        }
     }
 
     void checkUnlabeledData() throws FileNotFoundException {
@@ -97,38 +105,39 @@ public class ParagraphVectorsClassifierExample {
       which categories our unlabeled document falls into.
       So we'll start loading our unlabeled documents and checking them
      */
-     ClassPathResource unClassifiedResource = new ClassPathResource("paravec/unlabeled");
-     FileLabelAwareIterator unClassifiedIterator = new FileLabelAwareIterator.Builder()
-             .addSourceFolder(unClassifiedResource.getFile())
-             .build();
+        ClassPathResource unClassifiedResource = new ClassPathResource("paravec/unlabeled");
+        FileLabelAwareIterator unClassifiedIterator = new FileLabelAwareIterator.Builder()
+            .addSourceFolder(unClassifiedResource.getFile())
+            .build();
 
      /*
       Now we'll iterate over unlabeled data, and check which label it could be assigned to
       Please note: for many domains it's normal to have 1 document fall into few labels at once,
       with different "weight" for each.
      */
-     MeansBuilder meansBuilder = new MeansBuilder(
-         (InMemoryLookupTable<VocabWord>)paragraphVectors.getLookupTable(),
-           tokenizerFactory);
-     LabelSeeker seeker = new LabelSeeker(iterator.getLabelsSource().getLabels(),
-         (InMemoryLookupTable<VocabWord>) paragraphVectors.getLookupTable());
+        MeansBuilder meansBuilder = new MeansBuilder(
+            (InMemoryLookupTable<VocabWord>) paragraphVectors.getLookupTable(),
+            tokenizerFactory);
+//        LabelSeeker seeker = new LabelSeeker(iterator.getLabelsSource().getLabels(),
+//            (InMemoryLookupTable<VocabWord>) paragraphVectors.getLookupTable());
 
-     while (unClassifiedIterator.hasNextDocument()) {
-         LabelledDocument document = unClassifiedIterator.nextDocument();
-         INDArray documentAsCentroid = meansBuilder.documentAsVector(document);
-         List<Pair<String, Double>> scores = seeker.getScores(documentAsCentroid);
+        int correctCount = 0;
+        int errorCount = 0;
 
-         /*
-          please note, document.getLabel() is used just to show which document we're looking at now,
-          as a substitute for printing out the whole document name.
-          So, labels on these two documents are used like titles,
-          just to visualize our classification done properly
-         */
-         log.info("Document '" + document.getLabel() + "' falls into the following categories: ");
-         for (Pair<String, Double> score: scores) {
-             log.info("        " + score.getFirst() + ": " + score.getSecond());
-         }
-     }
+        while (unClassifiedIterator.hasNextDocument()) {
+            LabelledDocument document = unClassifiedIterator.nextDocument();
+            INDArray documentAsCentroid = meansBuilder.documentAsVector(document);
+//            List<Pair<String, Double>> scores = seeker.getScores(documentAsCentroid);
 
+            List<String> labels = new ArrayList(paragraphVectors.nearestLabels(documentAsCentroid, 1));
+
+            if (document.getLabel().equalsIgnoreCase(labels.get(0))) {
+                correctCount++;
+            } else {
+                errorCount++;
+            }
+        }
+
+        System.out.println("FINAL SCORE: " + ((double) correctCount / ((double) correctCount + (double) errorCount)) * 100 + "%");
     }
 }
